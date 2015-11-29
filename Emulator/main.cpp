@@ -1,8 +1,12 @@
 #include <iostream>
 #include <sstream>
 #include <Windows.h>
+#include <map>
+#include <sys/stat.h>
+
 
 #include "Chip8.h"
+#include "SuperChip.h"
 
 // GLAD
 #include <glad/glad.h>
@@ -11,6 +15,15 @@
 #include <GLFW/glfw3.h>
 
 #define SHADER_DEBUGGING
+#define SUPERCHIP
+
+#define CHECK_KEY(key) if (glfwGetKey(window, key) == GLFW_PRESS) emulator.m_Key |= 1 << gKeyMap[key]
+
+#ifdef SUPERCHIP
+typedef SuperChip Emulator;
+#else
+typedef Chip8 Emulator;
+#endif
 
 class LogBuf : public std::stringbuf {
 protected:
@@ -36,10 +49,32 @@ bool gIsShaderError = false;
 const GLuint WIDTH = 1024, HEIGHT = 512;
 
 
-Chip8 emulator;
+std::map<int, U16> gKeyMap;
+
+//Create emulator;
+Emulator emulator;
 
 
-int main() {
+int main(int argc, char* argv[]) {
+	//Set keys
+	gKeyMap.insert(std::make_pair(GLFW_KEY_1, 0x1));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_2, 0x2));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_3, 0x3));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_4, 0xC));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_Q, 0x4));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_W, 0x5));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_E, 0x6));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_R, 0xD));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_A, 0x7));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_S, 0x8));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_D, 0x9));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_F, 0xE));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_Z, 0xA));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_X, 0x0));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_C, 0xB));
+	gKeyMap.insert(std::make_pair(GLFW_KEY_V, 0xF));
+
+
 	//Set debugging log
 	LogBuf logBuf;
 	std::clog.rdbuf(&logBuf);
@@ -62,9 +97,6 @@ int main() {
 		return -1;
 	}
 
-	// Set the required callback functions
-	glfwSetKeyCallback(window, key_callback);
-	glfwSetDropCallback(window, drop_callback);
 
 	if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
 		std::cout << "Failed to initialize OpenGL context" << std::endl;
@@ -126,11 +158,22 @@ int main() {
 	glEnableVertexAttribArray(texCoordAttrib);
 	glVertexAttribPointer(texCoordAttrib, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), (void*)(2 * sizeof(GLfloat)));
 
+	glfwSwapInterval(1);
 
-	emulator.LoadRom("c8games/MAZE");
+#ifdef SUPERCHIP
+	emulator.SetExitCallback([&]() {glfwSetWindowShouldClose(window, GL_TRUE); });
+#endif
 
+	if (argc > 1) {
+		emulator.LoadRom(argv[1]);
+	}
 	srand(GetTickCount());
 
+	// Set the required callback functions
+	glfwSetKeyCallback(window, key_callback);
+	glfwSetDropCallback(window, drop_callback);
+
+	//Set texture parameters
 	GLuint texture_id;
 	glGenTextures(1, &texture_id);
 	glBindTexture(GL_TEXTURE_2D, texture_id);
@@ -143,12 +186,11 @@ int main() {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
 
 
-	__int64 countsPerSecond, prevTime, currTime;
-	QueryPerformanceFrequency((LARGE_INTEGER*)&countsPerSecond);
-	float secondsPerCount = 1.0f / countsPerSecond;
-	QueryPerformanceCounter((LARGE_INTEGER*)&prevTime);
-
-	glfwSwapInterval(1);
+#ifdef SHADER_DEBUGGING
+	struct stat buf;
+	stat("Resources/fragmentShader.glsl", &buf);
+	int lastShaderModification = (int)buf.st_mtime;
+#endif
 
 	// Game loop
 	while (!glfwWindowShouldClose(window)) {
@@ -156,37 +198,31 @@ int main() {
 		// Check if any events have been activated (key pressed, mouse moved etc.) and call corresponding response functions
 		glfwPollEvents();
 
-
-		QueryPerformanceCounter((LARGE_INTEGER*)&currTime);
-		float elapsedTime = (float)(currTime - prevTime) * secondsPerCount;
-		float epsilon = 1.0f / 120.0f;
-		if (elapsedTime > epsilon) {
-
-
-		}
+		HandleInput(window);
 		emulator.DecreaseTimers();
 		for (int i = 0; i < 5; i++) {
-
-		prevTime = currTime;
-		//emulator.m_Key = 0;
-		HandleInput(window);
-
-		//loop emulator
-		emulator.Loop();
+			//loop emulator
+			emulator.Loop();
 		}
 		emulator.m_Key = 0;
 
 #ifdef SHADER_DEBUGGING
-		if (glfwGetKey(window, GLFW_KEY_F2) == GLFW_PRESS) {
+		stat("Resources/fragmentShader.glsl", &buf);
+		if (lastShaderModification < (int)buf.st_mtime) {
+			lastShaderModification = (int)buf.st_mtime;
 			ReloadShaderFromFile("Resources/fragmentShader.glsl", fragmentShader);
 			glLinkProgram(shaderProgram);
 		}
 #endif
 
-
-		if (emulator.m_DoRedraw) {
-		}
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 32, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, (GLvoid*)emulator.m_Texture);
+#ifdef SUPERCHIP
+		if (emulator.m_Extended)
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 128, 64, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, (GLvoid*)emulator.m_Gfx);
+		else
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 32, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, (GLvoid*)emulator.m_Gfx);
+#else
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 32, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, (GLvoid*)emulator.m_Texture);
+#endif
 
 		// Render
 		// Clear the screen to white
@@ -205,89 +241,48 @@ int main() {
 	return 0;
 }
 
-void HandleInput(GLFWwindow *window) {
-	if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS)
-		emulator.m_Key |= 1;
-	if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS)
-		emulator.m_Key |= 2;
-	if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS)
-		emulator.m_Key |= 4;
-	if (glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS)
-		emulator.m_Key |= 8;
-	if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-		emulator.m_Key |= 16;
-	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-		emulator.m_Key |= 32;
-	if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-		emulator.m_Key |= 64;
-	if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
-		emulator.m_Key |= 128;
-	if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-		emulator.m_Key |= 256;
-	if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-		emulator.m_Key |= 512;
-	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-		emulator.m_Key |= 1024;
-	if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS)
-		emulator.m_Key |= 2048;
-	if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS)
-		emulator.m_Key |= 4096;
-	if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS)
-		emulator.m_Key |= 8196;
-	if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS)
-		emulator.m_Key |= 16384;
-	if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS)
-		emulator.m_Key |= 32768;
+#pragma region Input
 
+void HandleInput(GLFWwindow* window) {
+	CHECK_KEY(GLFW_KEY_1);
+	CHECK_KEY(GLFW_KEY_2);
+	CHECK_KEY(GLFW_KEY_3);
+	CHECK_KEY(GLFW_KEY_4);
+	CHECK_KEY(GLFW_KEY_Q);
+	CHECK_KEY(GLFW_KEY_W);
+	CHECK_KEY(GLFW_KEY_E);
+	CHECK_KEY(GLFW_KEY_R);
+	CHECK_KEY(GLFW_KEY_A);
+	CHECK_KEY(GLFW_KEY_S);
+	CHECK_KEY(GLFW_KEY_D);
+	CHECK_KEY(GLFW_KEY_F);
+	CHECK_KEY(GLFW_KEY_Z);
+	CHECK_KEY(GLFW_KEY_X);
+	CHECK_KEY(GLFW_KEY_C);
+	CHECK_KEY(GLFW_KEY_V);
 }
 
 // Is called whenever a key is pressed/released via GLFW
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode) {
-	//std::cout << key << std::endl;
+	UNREFERENCED_PARAMETER(mode);
+	UNREFERENCED_PARAMETER(scancode);
+	UNREFERENCED_PARAMETER(window);
+
 	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
 		glfwSetWindowShouldClose(window, GL_TRUE);
-
-	if (key == GLFW_KEY_1)
-		emulator.m_Key |= 1;
-	if (key == GLFW_KEY_2)
-		emulator.m_Key |= 2;
-	if (key == GLFW_KEY_3)
-		emulator.m_Key |= 4;
-	if (key == GLFW_KEY_4)
-		emulator.m_Key |= 8;
-	if (key == GLFW_KEY_Q)
-		emulator.m_Key |= 16;
-	if (key == GLFW_KEY_W)
-		emulator.m_Key |= 32;
-	if (key == GLFW_KEY_E)
-		emulator.m_Key |= 64;
-	if (key == GLFW_KEY_R)
-		emulator.m_Key |= 128;
-	if (key == GLFW_KEY_A)
-		emulator.m_Key |= 256;
-	if (key == GLFW_KEY_S)
-		emulator.m_Key |= 512;
-	if (key == GLFW_KEY_D)
-		emulator.m_Key |= 1024;
-	if (key == GLFW_KEY_F)
-		emulator.m_Key |= 2048;
-	if (key == GLFW_KEY_Z)
-		emulator.m_Key |= 4096;
-	if (key == GLFW_KEY_X)
-		emulator.m_Key |= 8196;
-	if (key == GLFW_KEY_C)
-		emulator.m_Key |= 16384;
-	if (key == GLFW_KEY_V)
-		emulator.m_Key |= 32768;
-
 }
 
 void drop_callback(GLFWwindow* window, int count, const char** paths) {
+	UNREFERENCED_PARAMETER(window);
 	for (int i = 0; i < count; i++) {
 		std::cout << paths[i] << std::endl;
 	}
-	//emulator.LoadRom(paths[0]);
+	emulator.LoadRom(paths[0]);
 }
+
+#pragma endregion
+
+#pragma region Shader Interpreter and Compiler
 
 void printShaderLog(GLuint shader) {
 	//Make sure name is shader 
@@ -383,3 +378,5 @@ void ReloadShaderFromFile(const std::string & filePath, GLuint shaderID) {
 		printf("Unable to open file %s\n", filePath.c_str());
 	}
 }
+
+#pragma endregion
